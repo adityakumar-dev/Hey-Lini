@@ -59,8 +59,6 @@ class SearXNGSearch:
             
             # Update search parameters
             self.data['q'] = query
-            if categories:
-                self.data['categories'] = ','.join(categories)
             
             logger.debug(f"Search parameters: {self.data}")
 
@@ -101,35 +99,19 @@ class SearXNGSearch:
                         content = result.get('content', 'No description')
                         content = ' '.join(content.split())  # Remove extra whitespace
                         
-                        # Extract published date if available
-                        published_date = result.get('publishedDate')
-                        if published_date:
-                            try:
-                                # Try to parse the date string
-                                published_date = datetime.fromisoformat(published_date.replace('Z', '+00:00'))
-                            except (ValueError, TypeError):
-                                published_date = None
-                        
                         formatted_result = {
                             'title': result.get('title', 'No title'),
                             'url': result.get('url', ''),
                             'content': content,
                             'source': result.get('engine', 'Unknown'),
                             'domain': domain,
-                            'timestamp': published_date.isoformat() if published_date else datetime.now().isoformat(),
-                            'score': result.get('score', 0),
-                            'category': result.get('category', 'general'),
-                            'thumbnail': result.get('thumbnail', ''),
-                            'engines': result.get('engines', [])
+                            'timestamp': datetime.now().isoformat()
                         }
                         formatted_results.append(formatted_result)
                         logger.debug(f"Found result: {formatted_result['title']}")
                     except Exception as e:
                         logger.error(f"Error parsing result: {e}")
                         continue
-            
-            # Sort results by score if available
-            formatted_results.sort(key=lambda x: x.get('score', 0), reverse=True)
             
             return formatted_results
 
@@ -170,11 +152,7 @@ class SearXNGSearch:
                 formatted += f"Content: {result['content']}\n\n"
                 formatted += f"URL: {self._clean_url(result['url'])}\n"
                 formatted += f"Engine: {result['source']}\n"
-                formatted += f"Score: {result.get('score', 'N/A')}\n"
-                formatted += f"Category: {result.get('category', 'general')}\n"
                 formatted += f"Retrieved: {result['timestamp']}\n"
-                if result.get('engines'):
-                    formatted += f"Search Engines: {', '.join(result['engines'])}\n"
                 formatted += "-" * 40 + "\n\n"
             
             formatted += "=" * 80 + "\n\n"
@@ -186,9 +164,9 @@ def main():
     searx = SearXNGSearch()
     
     # Test search
-    query = "todayiplmatch"
+    query = "vmsbutu affiliated colleges"
     print(f"\nTesting search for: {query}")
-    results = searx.search(query, num_results=2 )
+    results = searx.search(query, num_results=10)
     
     # Print formatted results
     print(searx.format_results(results))

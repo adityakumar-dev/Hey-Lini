@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Request, HTTPException, Depends
+from fastapi import APIRouter, File, Form, Request, HTTPException, Depends, UploadFile
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from pydantic import BaseModel
 from typing import Optional
@@ -7,13 +7,15 @@ import jwt
 from db.getdb import get_db
 from db.models import User
 from sqlalchemy.orm import Session
-
+from db.models import AdminUser
 router = APIRouter()
 
 # Basic user model for request/response
 class UserCreate(BaseModel):
     username: str
     password: str
+    name : str
+    contact : str
 
 class UserResponse(BaseModel):
     user_id: str
@@ -44,7 +46,10 @@ def register(user: UserCreate, db: Session = Depends(get_db)):
         # Create new user (in production, hash the password!)
         new_user = User(
             username=user.username,
-            password=user.password  # In production, use proper password hashing!
+            password=user.password,
+            name = user.name,
+            contact = user.contact  
+                # In production, use proper password hashing!
         )
         db.add(new_user)
         db.commit()
@@ -53,29 +58,40 @@ def register(user: UserCreate, db: Session = Depends(get_db)):
         return {
             "status": "success",
             "message": "User registered successfully",
-            "user_id": new_user.id
+            "user_id": new_user.id,
+            
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+from pydantic import BaseModel
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
 @router.post("/auth/login")
-def login(user: UserCreate, db: Session = Depends(get_db)):
+def login(data : LoginRequest, db: Session = Depends(get_db)):
     try:
         # Find user
-        user = db.query(User).filter(User.username == user.username).first()
-        if not user or user.password != user.password:  # In production, use proper password verification!
+        user = db.query(User).filter(User.username == data.username).first()
+        if not user:
+            raise HTTPException(status_code=401, detail="Invalid credentials")
+
+        if not user or user.password != data.password:  # In production, use proper password verification!
             raise HTTPException(status_code=401, detail="Invalid credentials")
 
         # Create access token
         access_token = create_access_token(
             data={"sub": user.username, "user_id": user.id}
         )
-
+        print(data)
         return {
             "status": "success",
             "access_token": access_token,
             "token_type": "bearer",
-            "user_id": user.id
+            "user_id": user.id,
+            "user" : user,
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -101,3 +117,56 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
         raise HTTPException(status_code=401, detail="Invalid token")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+class AdminRegisterSchema(BaseModel):
+    name : str
+    username: str
+    password: str
+    official_id: str
+    role: str
+    city: str
+    email : str
+    contact: str
+    is_organization: str
+    location_cordinate: str
+
+class AdminLoginSchema(BaseModel):
+    username: str
+    password: str
+
+@router.post("/admin/register")
+def register_admin(data: AdminRegisterSchema, db: Session = Depends(get_db)):
+    existing_user = db.query(AdminUser).filter(AdminUser.username == data.username).first()
+    if existing_user:
+        raise HTTPException(status_code=400, detail="Username already exists")
+
+    user = AdminUser(
+        name = data.name,
+        username=data.username,
+        password=data.password,  # In production, hash the password!
+        official_id=data.official_id,
+        role=data.role,
+        city=data.city,
+        email=data.email,
+        contact=data.contact,
+        is_organization=str(data.is_organization).lower(),
+        location_cordinate=data.location_cordinate
+    )
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    return {"message": "Admin registered successfully", "user_id": user.id}
+
+
+@router.post("/admin/login")
+def login_admin(data: AdminLoginSchema, db: Session = Depends(get_db)):
+    user = db.query(AdminUser).filter(AdminUser.username == data.username).first()
+    if not user or not data.password == user.password:
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+    return {"message": "Login successful","user" : user}
+
+@router.get("/admin/all") 
+def get_all_admins(db: Session = Depends(get_db)):
+    admins = db.query(AdminUser).all()
+    return admins
