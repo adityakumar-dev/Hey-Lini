@@ -329,3 +329,52 @@ Please follow these guidelines:
             print(f"Error: {error_msg}")
             yield f"data: {json.dumps({'error': error_msg})}\n\n"
             
+
+    def analyzeImageStream(self, prompt: str, image_path: List[str], history: List[Dict]) -> Generator[str, None, None]:
+        try:
+            # Open image in base64 format
+            image_base64 = []
+            for image in image_path:
+                with open(image, "rb") as image_file:
+                    image_base64.append(base64.b64encode(image_file.read()).decode("utf-8"))
+
+            # Build the prompt in the correct format for Ollama vision models
+            data = {
+                "model": self.model,
+                "messages": [
+                    {"role": "user", "content": prompt, "images": image_base64}
+                ],
+                "stream": True,
+            }
+
+            print(f"Sending request to Ollama with data: {json.dumps(data, indent=2)}")
+
+            # Send the request to Ollama
+            response = requests.post(f"{self.base_url}/chat", json=data, stream=True)
+            response.raise_for_status()
+
+            # Process the streaming response
+            for line in response.iter_lines():
+                if line:
+                    try:
+                        chunk = json.loads(line.decode("utf-8"))
+                        if "message" in chunk:
+                            content = chunk["message"].get("content", "")
+                            if content:
+                                yield f"data: {json.dumps({'content': content})}\n\n"
+                    except json.JSONDecodeError as e:
+                        print(f"Error decoding JSON: {e}")
+                        continue
+
+        except FileNotFoundError:
+            error_msg = "Error: Image file not found"
+            print(error_msg)
+            yield f"data: {json.dumps({'error': error_msg})}\n\n"
+        except requests.exceptions.RequestException as e:
+            error_msg = f"Error making request to Ollama: {str(e)}"
+            print(error_msg)
+            yield f"data: {json.dumps({'error': error_msg})}\n\n"
+        except Exception as e:
+            error_msg = f"An unexpected error occurred: {str(e)}"
+            print(error_msg)
+            yield f"data: {json.dumps({'error': error_msg})}\n\n"

@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from db.getdb import engine, Base
-from routes import chat, auth , voice,health_router,road_safety,users,notification_handler
+from routes import chat, auth , voice,health_router,road_safety,users,notification_handler, analyze_report
 
 # Create FastAPI app
 app = FastAPI(title="Chatbot API")
@@ -29,6 +29,8 @@ app.include_router(health_router.router, prefix="/api", tags=["Chat"])
 app.include_router(road_safety.router, prefix="/api", tags=["Chat"])
 app.include_router(users.router, prefix="/api", tags=["Road Safety"])
 app.include_router(notification_handler.router, prefix="/api", tags=["Notification"])
+app.include_router(analyze_report.router, prefix="/api", tags=["Notification"])
+
 @app.get("/")
 async def root():
     return {"message": "Welcome to Chatbot API"}
