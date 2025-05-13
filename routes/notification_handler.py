@@ -4,7 +4,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from datetime import datetime
 from db.getdb import get_db
-from db.models import AdminNotification
+from db.models import AdminNotification, User
 from sqlalchemy.orm import Session
 import mimetypes
 
@@ -72,6 +72,10 @@ def send_notification(
     
     db.add(note)
     db.commit()
+    db.refresh(note)
+    user = db.query(User).filter(User.id == user_id).first()
+    user.last_location = coordinate
+    db.commit()
     return {"message": "Notification sent successfully"}
 
 @router.get("/notify/all")
@@ -107,7 +111,7 @@ def complete_notification(
     notif.last_admin_coordinate = last_admin_coordinate
     notif.action_details = action_details
     notif.status = "completed"
-
+    notif.completed_time = datetime.utcnow()
     if image_file:
         image_path = f"static/evidence/{notification_id}_{image_file.filename}"
         with open(image_path, "wb") as f:

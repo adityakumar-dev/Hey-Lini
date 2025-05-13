@@ -16,6 +16,11 @@ class UserCreate(BaseModel):
     password: str
     name : str
     contact : str
+    address : str | None = None
+    speciality : str | None = None
+    required_needs : str | None = None
+    last_location : str | None = None
+    fcm_token : str | None = None
 
 class UserResponse(BaseModel):
     user_id: str
@@ -48,7 +53,12 @@ def register(user: UserCreate, db: Session = Depends(get_db)):
             username=user.username,
             password=user.password,
             name = user.name,
-            contact = user.contact  
+            contact = user.contact,
+            address = user.address,
+            speciality = user.speciality,
+            required_needs = user.required_needs,
+            last_location = user.last_location,
+            fcm_token = user.fcm_token
                 # In production, use proper password hashing!
         )
         db.add(new_user)
@@ -59,7 +69,7 @@ def register(user: UserCreate, db: Session = Depends(get_db)):
             "status": "success",
             "message": "User registered successfully",
             "user_id": new_user.id,
-            
+            "user" : new_user
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -69,7 +79,8 @@ from pydantic import BaseModel
 class LoginRequest(BaseModel):
     username: str
     password: str
-
+    last_location : str | None = None
+    fcm_token : str | None = None
 @router.post("/auth/login")
 def login(data : LoginRequest, db: Session = Depends(get_db)):
     try:
@@ -85,6 +96,8 @@ def login(data : LoginRequest, db: Session = Depends(get_db)):
         access_token = create_access_token(
             data={"sub": user.username, "user_id": user.id}
         )
+        db.query(User).filter(User.id == user.id).update({"last_location": data.last_location, "last_location_updated_at": datetime.utcnow(), "fcm_token": data.fcm_token})
+        db.commit()
         print(data)
         return {
             "status": "success",
@@ -130,11 +143,11 @@ class AdminRegisterSchema(BaseModel):
     contact: str
     is_organization: str
     location_cordinate: str
-
+    fcm_token : str | None = None
 class AdminLoginSchema(BaseModel):
     username: str
     password: str
-
+    fcm_token : str | None = None
 @router.post("/admin/register")
 def register_admin(data: AdminRegisterSchema, db: Session = Depends(get_db)):
     existing_user = db.query(AdminUser).filter(AdminUser.username == data.username).first()
@@ -151,7 +164,8 @@ def register_admin(data: AdminRegisterSchema, db: Session = Depends(get_db)):
         email=data.email,
         contact=data.contact,
         is_organization=str(data.is_organization).lower(),
-        location_cordinate=data.location_cordinate
+        location_cordinate=data.location_cordinate,
+        fcm_token = data.fcm_token
     )
     db.add(user)
     db.commit()
@@ -164,6 +178,8 @@ def login_admin(data: AdminLoginSchema, db: Session = Depends(get_db)):
     user = db.query(AdminUser).filter(AdminUser.username == data.username).first()
     if not user or not data.password == user.password:
         raise HTTPException(status_code=401, detail="Invalid credentials")
+    db.query(AdminUser).filter(AdminUser.id == user.id).update({"fcm_token": data.fcm_token})
+    db.commit()
     return {"message": "Login successful","user" : user}
 
 @router.get("/admin/all") 

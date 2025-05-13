@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, Form, File, UploadFile
+from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 from typing import List, Dict
 router = APIRouter()
@@ -27,3 +28,27 @@ def get_emergency_contacts(user_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="User not found")
     
     return {"emergency_contacts": user.emergency_contacts}
+
+class LocationUpdateInput(BaseModel):
+    user_id: int
+    location: str
+@router.post("/user/update/location")
+def update_location(data: LocationUpdateInput, db: Session = Depends(get_db)):
+    user = db.query(User).filter(User.id == data.user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    user.last_location = data.location
+    db.commit()
+    return {"status": "success", "message": "Location updated"}
+
+
+
+@router.get("/user/emergency/details/{user_id}")
+def get_emergency_details(user_id: int, db: Session = Depends(get_db)):
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    user.password = None
+    return user
