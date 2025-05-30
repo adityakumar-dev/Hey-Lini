@@ -6,14 +6,14 @@ router = APIRouter()
 chat_model = ChatModel()
 
 @router.get("/health")
-async def health_check(prompt: str = None):
+async def health_check(query: str = None):
 
     try:
-        if not prompt:
-            return {"error": "Prompt is required"}
+        if not query:
+            return {"error": "Query is required"}
 
         # Generate a streaming response from the model
-        response_stream = chat_model.quick_streamed_health(prompt, "health")
+        response_stream = chat_model.quick_streamed_health(query, "health")
 
         # Return the response as a streaming response
         return StreamingResponse(response_stream, media_type="text/event-stream")

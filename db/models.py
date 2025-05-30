@@ -18,6 +18,7 @@ class User(Base):
     address = Column(String, nullable=True)
     fcm_token = Column(String, nullable=True)
     is_track_me = Column(Boolean, nullable=False, default=False)
+    need_help = Column(Boolean, nullable=False, default=False)
     # [{"name" : "", "contact" :""}]
     emergency_contacts = Column(JSON, nullable=True)  # List of emergency contacts
     created_at = Column(DateTime, default=datetime.utcnow)

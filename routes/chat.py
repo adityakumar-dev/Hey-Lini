@@ -1,343 +1,231 @@
-from fastapi import APIRouter, Depends, Form, HTTPException, File, UploadFile
+import os
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
-from typing import List, Dict, Any, Optional, Union
-from sqlalchemy.orm import Session
 from pydantic import BaseModel
-from datetime import datetime
-import json
-import traceback
-
+from sqlalchemy.orm import Session
 from db.getdb import get_db
-from brain.model_init import ChatModel
-from db.models import Conversation
+from db.models import Conversation, User
+from brain.model_active import ModelInit
+from datetime import datetime
+from typing import Dict, List, Optional
+import json
+import logging
 
 router = APIRouter()
-chat_model = ChatModel()
+logger = logging.getLogger(__name__)
 
-def add_history(user_id: int, role: str, content: str, db: Session, conversation_id: int = None) -> Conversation:
-    """Append a message to the correct conversation, always as a flat list. Create conversation if needed."""
+class ChatRequest(BaseModel):
+    user_id: str
+    query: str
+    is_voice: Optional[bool] = False
+    is_websearch: Optional[bool] = False
+    is_image_analysis: Optional[bool] = False
+    conversation_id: str 
+    files: Optional[List[UploadFile]] = None
+
+model = ModelInit()
+
+async def response_generator(history: List[Dict], db: Session, user_id: str, query: str, is_voice: bool, is_websearch: bool, is_image_analysis: bool, conversation_id: str, files: Optional[List[UploadFile]] = None,  image_path: Optional[str] = None):
+    logger.info(f"Starting response for query: {query}")
+    full_response = ""
+    
     try:
-        # Clean the content if it's a JSON string
-        if isinstance(content, str):
-            try:
-                # Try to parse as JSON
-                parsed_content = json.loads(content)
-                # If it's a dict with response field, use that
-                if isinstance(parsed_content, dict) and "response" in parsed_content:
-                    content = parsed_content["response"]
-                # If it's a dict with message field, use that
-                elif isinstance(parsed_content, dict) and "message" in parsed_content:
-                    content = parsed_content["message"].get("content", content)
-            except json.JSONDecodeError:
-                # If not JSON, use as is
-                pass
+        # Save user message first
+        save_history(
+            user_id=user_id,
+            role="user",
+            content=query,
+            conversation_id=conversation_id,  # Fixed typo here
+            db=db
+        )
+        # send metadata converstation to client
 
-        if not conversation_id:
-            new_message = {
-                "role": role,
-                "content": content
-            }
-            conversation = Conversation(
-                user_id=user_id, 
-                history=[new_message], 
-                created_at=datetime.utcnow()
+        # Generate response based on mode
+        if is_voice:
+            logger.info("Using voice response mode")
+            generator = model.text_offline_response(
+                query=query,
+                history=history,
+                is_voice=True
             )
-            db.add(conversation)
-            db.commit()
-            db.refresh(conversation)
-            print("1st if conversation : ",conversation)   
-            return conversation
-        conversation = None
-        # First, try to find the conversation by provided ID
-        if conversation_id:
-            conversation = db.query(Conversation).filter(
-                Conversation.conversation_id == conversation_id,
-                Conversation.user_id == user_id
-            ).first()
-        print("1st if conversation : ",conversation)   
-        # If no conversation found but ID was provided, this is an error
-        if conversation_id and not conversation:
-            raise HTTPException(status_code=404, detail=f"Conversation with ID {conversation_id} not found")
-        print("2nd if conversation : ",conversation)   
-        # If no conversation_id was provided or it wasn't found, check if we should use the latest
-        if not conversation and not conversation_id:
-            # Get the latest conversation for the user if it exists
-            conversation = db.query(Conversation).filter(
-                Conversation.user_id == user_id
-            ).order_by(Conversation.created_at.desc()).first()
-            print("3rd if conversation : ",conversation)   
-        # If still no conversation, create a new one
-        if not conversation:
-            # Create new conversation with default empty history
-            conversation = Conversation(
-                user_id=user_id, 
-                history=[], 
-                created_at=datetime.utcnow()
+        elif image_path:
+            logger.info(f"Using image analysis mode with image: {image_path}")
+            generator = model.image_offline_response(
+                query=query,
+                history=history,
+                image_path=image_path
             )
-            db.add(conversation)
-            db.commit()
-            db.refresh(conversation)
-        print("4th if conversation : ",conversation)   
-        
-        # Get current history or initialize an empty list
-        current_history = []
-        if conversation.history:
-            # Try to handle both list and JSON string formats
-            if isinstance(conversation.history, list):
-                current_history = conversation.history
-            elif isinstance(conversation.history, str):
-                try:
-                    current_history = json.loads(conversation.history)
-                except json.JSONDecodeError:
-                    current_history = []
-        print("5th if conversation : ",conversation)   
+        else:
+            logger.info("Using standard text response mode")
+            generator = model.text_offline_response(
+                query=query,
+                history=history,
+                is_voice=False
+            )
+
+        # Stream the response
+        async for chunk in generator:
+            if chunk.startswith('[Error]') or chunk.startswith('[Exception]'):
+                logger.error(f"Error from model: {chunk}")
+                yield f"data: {chunk}\n\n"
+                break  # Changed from return to break to ensure we save what we have
             
-        # Ensure we have a flat list (not nested)
-        flat_history = []
-        for item in current_history:
-            if isinstance(item, list):
-                flat_history.extend(item)
-            else:
-                flat_history.append(item)
-        print("6th if conversation : ",conversation)   
-                
-        # Create the new message
-        new_message = {
-            "role": role,
-            "content": content
-        }
-        
-        # Append the new message to the flat history
-        flat_history.append(new_message)
-        
-        # Explicitly update the history field
-        conversation.history = flat_history
-        
-        # Commit changes and refresh
-        db.commit()
-        db.refresh(conversation)
-        
-        return conversation
-    except HTTPException as he:
-        # Re-raise HTTP exceptions
-        raise he
+            logger.debug(f"Received chunk: {chunk}")
+            try:
+                chunk_data = json.loads(chunk.replace('data: ', ''))
+                if 'content' in chunk_data:
+                    full_response += chunk_data['content']
+            except json.JSONDecodeError:
+                logger.warning(f"Failed to decode chunk JSON: {chunk}")
+            
+            yield chunk
+
     except Exception as e:
-        db.rollback()
-        raise HTTPException(status_code=500, detail=f"Failed to update history: {str(e)}")
+        logger.error(f"Error in response generator: {str(e)}")
+        yield f"data: Error: {str(e)}\n\n"
+    finally:
+        # Save assistant response in finally block to ensure it runs
+    
+        yield "data: [DONE]\n\n"
+
+        # send metadata converstation to client
+        if conversation_id:
+            yield f'data: {{"metadata": {{"conversation_id": "{conversation_id}", "user_id": "{user_id}"}}}}'
+        else:
+            conversation = db.query(Conversation).filter(Conversation.user_id == user_id).order_by(Conversation.created_at.desc()).first()
+            conversation_id = conversation.conversation_id if conversation else None
+            yield f'data: {{"metadata": {{"conversation_id": "{conversation_id}", "user_id": "{user_id}"}}}}'
+
+
+        if full_response:
+            try:
+                save_history(
+                    user_id=user_id,
+                    role="assistant",
+                    content=full_response,
+                    conversation_id=conversation_id,
+                    db=db
+                )
+        
+            except Exception as e:
+                logger.error(f"Failed to save conversation history: {str(e)}")
+                yield f"data: {json.dumps({'warning': 'Failed to save conversation history'})}\n\n"
+
 
 @router.post("/chat")
 async def chat(
-    user_id: int = Form(...),
-    conversation_id: int = Form(None),
-    prompt: str = Form(...),
-    is_search: bool = Form(False),
-    image: List[UploadFile] = File(None),
+    user_id: str = Form(...),
+    query: str = Form(...)  ,
+    is_voice: bool = Form(False),
+    is_websearch: bool = Form(False),
+    is_image_analysis: bool = Form(False),
+    conversation_id: str = Form(None),
+    files: List[UploadFile] = Form(None),
     db: Session = Depends(get_db)
 ):
-    if not user_id:
-        raise HTTPException(status_code=400, detail="User ID is required")
-    if not prompt:
-        raise HTTPException(status_code=400, detail="Prompt is required")
+    # Verify user exists
+    db_user = db.query(User).filter(User.id == user_id).first()
+    if not db_user:
+        raise HTTPException(status_code=400, detail="User not found")
     
-    print(f"Processing chat request: user_id={user_id}, conversation_id={conversation_id}, prompt={prompt[:30]}...")
-    
-    try:
+    # Get conversation history
+    if  conversation_id:
+        history = get_history(
+        user_id=user_id,
+        conversation_id=conversation_id,
+        db=db
+        )
+    else:
         history = []
+    
+    # Handle file upload if present
+    image_path = None
+    if files:
         try:
-            conversation = db.query(Conversation).filter(Conversation.conversation_id == conversation_id).first()
-            if conversation:
-                history = conversation.history
+            os.makedirs(f"images/{user_id}", exist_ok=True)
+            for file in files:
+                image_path = f"images/{user_id}/{file.filename}"
+                contents = await file.read()
+                with open(image_path, "wb") as f:
+                    f.write(contents)
+                await file.seek(0)
         except Exception as e:
-            print(f"Error getting conversation history: {str(e)}")
-            history = []
-        
-        # Handle image processing
-        if image and len(image) > 0:
-            try:
-                import os
-                os.makedirs("images", exist_ok=True)
-                image_paths = []
-                for img in image:
-                    # Generate a unique filename
-                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                    filename = f"{timestamp}_{img.filename}"
-                    image_path = f"images/{filename}"
-                    
-                    # Save the image
-                    with open(image_path, "wb") as f:
-                        f.write(await img.read())
-                    image_paths.append(image_path)
-                
-                print(f"Processing images: {image_paths}")
-                
-                # Get conversation history
-                history = []
-                if conversation_id:
-                    conversation = db.query(Conversation).filter(Conversation.conversation_id == conversation_id).first()
-                    if conversation:
-                        history = conversation.history
-                
-                # Generate image analysis response
-                response = chat_model.analyzeImage(prompt, image_paths, history)
-                
-                # Record the conversation for image analysis
-                print(f"Adding user message to history for image analysis")
-                conversation = add_history(user_id, "user", prompt, db, conversation_id)
-                
-                if response:
-                    print(f"Adding assistant response to history for image analysis")
-                    add_history(user_id, "assistant", response, db, conversation.conversation_id)
-                    
-                    # Clean up image files after processing
-                    for path in image_paths:
-                        try:
-                            os.remove(path)
-                        except Exception as e:
-                            print(f"Error removing image file {path}: {str(e)}")
-                
-                return {
-                    "status": "success",
-                    "conversation_id": conversation.conversation_id,
-                    "history": conversation.history,
-                    "assistant_response": response
-                }
-            except Exception as img_err:
-                print(f"Image processing error: {str(img_err)}")
-                print(f"Traceback: {traceback.format_exc()}")
-                raise HTTPException(status_code=500, detail=f"Image processing error: {str(img_err)}")
-        
-        # Handle search mode
-        elif is_search:
-            try:
-                print(f"Processing search request")
-                # Get conversation history first
-                history = []
-                if conversation_id:
-                    conversation = db.query(Conversation).filter(Conversation.conversation_id == conversation_id).first()
-                    if conversation:
-                        history = conversation.history
-                
-                # Generate search response
-                response = chat_model.analyzeText(prompt, user_id, history, is_search=True)
-                
-                # Record search queries in conversation history
-                print(f"Adding user message to history for search")
-                conversation = add_history(user_id, "user", prompt, db, conversation_id)
-                
-                if response:
-                    print(f"Adding assistant response to history for search")
-                    add_history(user_id, "assistant", response, db, conversation.conversation_id)
-                
-                return {
-                    "status": "success",
-                    "conversation_id": conversation.conversation_id,
-                    "history": conversation.history,
-                    "assistant_response": response
-                }
-            except Exception as search_err:
-                print(f"Search processing error: {str(search_err)}")
-                raise HTTPException(status_code=500, detail=f"Search processing error: {str(search_err)}")
-        
-        # Normal chat flow
-        else:
-            print(f"Processing normal chat request")
-            
-            # Append user message to history
-            print(f"Adding user message to history"+" user : ",user_id , " convid  : " , conversation_id)
-            conversation = add_history(user_id, "user", prompt, db, conversation_id)
-            print(f"Created/updated conversation: {conversation.conversation_id}")
-            
-            # Check if conversation history is available
-            if not conversation.history:
-                print("WARNING: No history available for this conversation")
-            
-            # Get response from model
-            response = chat_model.analyzeText(prompt, user_id, conversation.history, is_search=False)
-            
-            # Add response to history
-            if response:
-                print(f"Adding assistant response to history")
-                add_history(user_id, "assistant", response, db, conversation.conversation_id)
-            
-            return {
-                "status": "success",
-                "conversation_id": conversation.conversation_id,
-                "history": conversation.history,
-                "assistant_response": response
-            }
-            
-    except Exception as e:
-        print(f"Error in chat route: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+            logger.error(f"Error handling file upload: {str(e)}")
+            raise HTTPException(status_code=400, detail=f"File upload failed: {str(e)}")
 
-class ChatAdd(BaseModel):
-    user_id: int
-    role: str
-    content: str
-    created_at: str
+    return StreamingResponse(
+        response_generator(
+            user_id=user_id,
+            query=query,
+            is_voice=is_voice,
+            is_websearch=is_websearch,
+            is_image_analysis=is_image_analysis,
+            conversation_id=conversation_id,
+            files=files,
+            history=history,
+            db=db,
+            image_path=image_path
+        ),
+        media_type="text/event-stream"
+    )
 
-@router.get("/chat/history/{conversation_id}")
-def chat_history(conversation_id: int, db: Session = Depends(get_db)):
-    try:
-        conversation = db.query(Conversation).filter(
-            Conversation.conversation_id == conversation_id,
-        ).first()
-        if not conversation:
-            raise HTTPException(status_code=404, detail="Conversation not found")
-        return {
-            "status": "success",
-            "data": {
-                "id": conversation.conversation_id,
-                "user_id": conversation.user_id,
-                "history": conversation.history,
-                "created_at": conversation.created_at.isoformat()
-            }
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+def get_history(user_id: str, conversation_id: str, db: Session) -> List[Dict]:
+    chat_entry = db.query(Conversation).filter(
+        Conversation.user_id == user_id,
+        Conversation.conversation_id == conversation_id
+    ).first()
+    return chat_entry.history if chat_entry else []
+
+def save_history(
+    user_id: str,
+    role: str,
+    content: str,
+    conversation_id: str,
+    db: Session
+):
+    data = {
+        "role": role,
+        "content": content,
+        "timestamp": datetime.now().isoformat()
+    }
+
+    chat_entry = db.query(Conversation).filter(
+        Conversation.user_id == user_id,
+        Conversation.conversation_id == conversation_id
+    ).first()
+
+    if chat_entry:
+        
+        history = chat_entry.history
+        db.query(Conversation).filter(Conversation.user_id == user_id, Conversation.conversation_id == conversation_id).update({
+            "history": history + [data]
+        })
+    else:
+        chat_entry = Conversation(
+            user_id=user_id,
+            conversation_id=conversation_id,
+            history=[data],
+            created_at=datetime.now()
+        )
+        db.add(chat_entry)
+
+    db.commit()
+    return chat_entry
 
 @router.get("/chat/history/user/{user_id}")
-def user_chat_history(user_id: int, db: Session = Depends(get_db)):
-    try:
-        conversations = db.query(Conversation).filter(
-            Conversation.user_id == user_id
-        ).order_by(Conversation.created_at.desc()).all()
-        return {
-            "status": "success",
-            "data": [
-                {
-                    "id": conv.conversation_id,
-                    "user_id": conv.user_id,
-                    "history": conv.history,
-                    "created_at": conv.created_at.isoformat()
-                } for conv in conversations
-            ]
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+async def get_chat_history(user_id: str, db: Session = Depends(get_db)):
+    chat_entry = db.query(Conversation).filter(Conversation.user_id == user_id).order_by(Conversation.created_at.desc()).all()
+    history = []
+    for entry in chat_entry:
+        history.append({
+            'conversation_id': entry.conversation_id,
+            'created_at': entry.created_at,
+            'title': entry.history[0]['content']
+        })
+    return history
 
-@router.delete("/chat/history/{conversation_id}")
-def delete_conversation(conversation_id: int, user_id: int, db: Session = Depends(get_db)):
-    try:
-        conversation = db.query(Conversation).filter(
-            Conversation.conversation_id == conversation_id,
-            Conversation.user_id == user_id  # Ensure user owns the conversation
-        ).first()
-        if not conversation:
-            raise HTTPException(status_code=404, detail="Conversation not found")
-        db.delete(conversation)
-        db.commit()
-        return {"status": "success", "message": "Conversation deleted successfully"}
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+@router.get("/chat/history/conversation/{conversation_id}")
+async def get_chat_history_by_conversation_id(conversation_id: str, db: Session = Depends(get_db)):
+    chat_entry = db.query(Conversation).filter(Conversation.conversation_id == conversation_id).first()
+    return chat_entry.history
 
-@router.delete("/chat/history/user/{user_id}")
-def clear_user_history(user_id: int, db: Session = Depends(get_db)):
-    try:
-        db.query(Conversation).filter(Conversation.user_id == user_id).delete()
-        db.commit()
-        return {"status": "success", "message": "All conversations cleared successfully"}
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(status_code=500, detail=str(e))

@@ -33,6 +33,7 @@ def get_emergency_contacts(user_id: int, db: Session = Depends(get_db)):
 class LocationUpdateInput(BaseModel):
     user_id: int
     location: str
+    need_help: bool
 @router.post("/user/update/location")
 def update_location(data: LocationUpdateInput, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.id == data.user_id).first()
@@ -40,6 +41,7 @@ def update_location(data: LocationUpdateInput, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="User not found")
     
     user.last_location = data.location
+    user.need_help = data.need_help
     user.last_location_updated_at = datetime.utcnow()
     db.commit()
     return {"status": "success", "message": "Location updated"}
